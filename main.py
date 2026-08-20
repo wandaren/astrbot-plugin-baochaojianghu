@@ -22,8 +22,9 @@
   /我的菜谱 [关键词]         查看本人已拥有的菜谱
   /我的厨师 [关键词]         查看本人已拥有的厨师
   /我的进度                  查看本人存档概览（菜谱/厨师/修炼数量）
-  /最优 [数量]               基于已拥有厨师+菜谱，计算单位时间金币收益最高的搭配
+  /最优 [数量]               按 3厨/2厨/1厨 分组输出金币收益最高的排班方案
   /bcjh源 <foodgame|baochaojianghu>   切换图鉴数据源
+  /帮助                      显示功能指令
 
 数据策略：插件加载 10s 后首次拉取图鉴数据，之后按 refresh_hours 定时刷新，内存缓存。
 依赖：aiohttp（在 requirements.txt 中声明）
@@ -614,6 +615,26 @@ class BaochaoJianghuPlugin(Star):
         yield event.plain_result("正在计算最优排班方案（3厨/2厨/1厨 分组），请稍候…")
         plans_by_k = self._calc_optimal(archive, per_k)
         yield event.plain_result(self._fmt_optimal(plans_by_k, per_k))
+
+    @filter.command("帮助", "显示插件功能指令")
+    async def cmd_help(self, event: AstrMessageEvent):
+        lines = [
+            "[爆炒江湖图鉴插件] 功能指令：",
+            "/菜谱 <名称>    查询菜谱（品阶/技法/材料/售价/解锁）",
+            "/厨师 <名称>    查询厨师（星级/技法/技能/修炼任务）",
+            "/厨具 <名称>    查询厨具（等级/加成）",
+            "/任务 <关键词>  查询任务",
+            "/材料 <名称>    查询材料获取方式",
+            "/遗玉 <名称>    查询遗玉加成",
+            "/导入 <校验码>  导入官方存档（游戏设置页获取校验码）",
+            "/我的菜谱 [词]  查看本人已拥有的菜谱",
+            "/我的厨师 [词]  查看本人已拥有的厨师",
+            "/我的进度       查看本人存档概览",
+            "/最优 [n]       按 3厨/2厨/1厨 分组输出收益最高排班方案",
+            "/bcjh源 <源>    切换图鉴数据源（foodgame/baochaojianghu）",
+            "/帮助           显示本帮助",
+        ]
+        yield event.plain_result("\n".join(lines))
 
     @filter.command("bcjh源", "切换图鉴数据源（foodgame 或 baochaojianghu）")
     async def cmd_source(self, event: AstrMessageEvent, source: str = ""):
