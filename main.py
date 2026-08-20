@@ -330,15 +330,15 @@ class BaochaoJianghuPlugin(Star):
         total = (price + ex) * (100 + buff)
         return -(-total // 100)  # ceil
 
-    def _calc_optimal(self, archive: dict, top_n: int = 3,
-                      max_chefs: int = 3, max_dishes: int = 3) -> list:
+    def _calc_optimal(self, archive: dict, per_k: int = 1,
+                      max_chefs: int = 3, max_dishes: int = 3) -> dict:
         """
-        排班优化：最多上 max_chefs 个厨师，每厨师最多做 max_dishes 个菜，
-        菜谱不跨厨师重复，求单位时间金币收益（金币/小时）最大的整体方案。
+        排班优化：分别求解 1厨、2厨、…、max_chefs 厨 的最优方案，
+        每厨师最多做 max_dishes 个菜，菜谱不跨厨师重复。
 
-        返回 [{"total": int, "items": [(chef, [(eff, recipe, grade), ...]), ...]}, ...]
-        按 total 降序，取 top_n 个方案。
-        算法：候选厨师裁剪（单人 Top3 收益排序前 N）→ 枚举 1..max_chefs 组合
+        返回 {k: [{"total": int, "items": [(chef, [(eff, recipe, grade), ...]), ...]}, ...]}
+        每个 k 取收益最高的 per_k 个方案。
+        算法：候选厨师裁剪（单人 Top3 收益排序前 N）→ 枚举各 k 组合
               → 组合内用 DP 精确分配菜谱（状态=各厨师已用菜位数）。
         """
         rep_got = archive.get("repGot", {})
@@ -346,7 +346,7 @@ class BaochaoJianghuPlugin(Star):
         recipes = [r for r in self._data.get("recipes", []) if rep_got.get(str(r.get("recipeId")))]
         chefs = [c for c in self._data.get("chefs", []) if chef_got.get(str(c.get("chefId")))]
         if not recipes or not chefs:
-            return []
+            return {}
 
         # 1. 预计算每厨师的候选菜（收益降序）
         chef_cands = []
@@ -370,16 +370,19 @@ class BaochaoJianghuPlugin(Star):
         ranked = sorted(range(len(chefs)), key=lambda i: _solo(chef_cands[i]), reverse=True)
         cand_idx = ranked[:25]
 
-        # 3. 枚举组合 + 组合内 DP
-        plans = []
+        # 3. 枚举各 k 组合 + 组合内 DP，按 k 分组
         import itertools
-        for k in range(1, min(max_chefs, len(cand_idx)) + 1):
+        plans_by_k = {}
+        max_k = min(max_chefs, len(cand_idx))
+        for k in range(1, max_k + 1):
+            k_plans = []
             for combo in itertools.combinations(cand_idx, k):
                 plan = self._schedule_for_combo(combo, chefs, chef_cands, max_dishes)
                 if plan:
-                    plans.append(plan)
-        plans.sort(key=lambda p: p["total"], reverse=True)
-        return plans[:top_n]
+                    k_plans.append(plan)
+            k_plans.sort(key=lambda p: p["total"], reverse=True)
+            plans_by_k[k] = k_plans[:per_k]
+        return plans_by_k
 
     def _schedule_for_combo(self, combo: tuple, chefs: list, chef_cands: list,
                             max_dishes: int = 3) -> dict:
@@ -452,21 +455,25 @@ class BaochaoJianghuPlugin(Star):
     def _fmt_eff(eff: int) -> str:
         return f"{eff:,}"
 
-    def _fmt_optimal(self, plans: list, top_n: int) -> str:
-        if not plans:
+    def _fmt_optimal(self, plans_by_k: dict, per_k: int) -> str:
+        if not plans_by_k:
             return "无法计算：请先 /导入 官方存档，并确认已拥有至少一个厨师和一个菜谱。"
-        lines = [f"[最优排班方案 Top {len(plans)}]（≤3厨师 × 每厨师≤3菜，菜不重复）"]
-        for idx, plan in enumerate(plans, 1):
-            total = plan["total"]
-            n_chef = len(plan["items"])
-            n_dish = sum(len(d) for _, d in plan["items"])
-            lines.append(f"\n── 方案{idx}：{n_chef}厨师 × {n_dish}菜，总收益 {self._fmt_eff(total)} 金币/h ──")
-            for chef, dishes in plan["items"]:
-                lines.append(f"👨‍🍳 {chef.get('name')}（{len(dishes)}菜）")
-                for eff, r, grade in dishes:
-                    buff = GRADE_BUFF.get(grade, 0)
-                    lines.append(f"  · {r.get('name')} [品级{grade} +{buff}%] {self._fmt_eff(eff)}金币/h")
-        lines.append(f"\n收益=加成后售价×3600/制作时间；显示前 {min(top_n, len(plans))} 个方案")
+        lines = [f"[最优排班]（每厨师≤{3}菜，菜不重复；按厨师数分组）"]
+        for k in sorted(plans_by_k.keys(), reverse=True):
+            plans = plans_by_k[k]
+            if not plans:
+                continue
+            for idx, plan in enumerate(plans, 1):
+                total = plan["total"]
+                n_dish = sum(len(d) for _, d in plan["items"])
+                suffix = f" #{idx}" if per_k > 1 else ""
+                lines.append(f"\n── {k}厨方案{suffix}：{n_dish}菜，总收益 {self._fmt_eff(total)} 金币/h ──")
+                for chef, dishes in plan["items"]:
+                    lines.append(f"👨‍🍳 {chef.get('name')}（{len(dishes)}菜）")
+                    for eff, r, grade in dishes:
+                        buff = GRADE_BUFF.get(grade, 0)
+                        lines.append(f"  · {r.get('name')} [品级{grade} +{buff}%] {self._fmt_eff(eff)}金币/h")
+        lines.append(f"\n收益=加成后售价×3600/制作时间；每组显示前 {per_k} 个方案")
         return "\n".join(lines)[:MAX_MSG_LEN]
 
     # ---------- 指令 ----------
@@ -592,7 +599,7 @@ class BaochaoJianghuPlugin(Star):
             f"遗玉/厨具数据: {'已导入' if archive.get('chefAmber') or archive.get('chefEquip') else '未导入'}"
         )
 
-    @filter.command("最优", "计算排班方案：最多3厨师×每厨师3菜，单位时间金币收益最高")
+    @filter.command("最优", "按 3厨/2厨/1厨 分组输出金币收益最高的排班方案（每厨师≤3菜）")
     async def cmd_optimal(self, event: AstrMessageEvent, num: str = ""):
         await self._ensure_data()
         user_id = str(event.get_sender_id())
@@ -601,12 +608,12 @@ class BaochaoJianghuPlugin(Star):
             yield event.plain_result("尚未导入官方存档，先使用 /导入 <校验码>。")
             return
         try:
-            top_n = max(1, min(5, int(num))) if num.strip() else 3
+            per_k = max(1, min(3, int(num))) if num.strip() else 1
         except ValueError:
-            top_n = 3
-        yield event.plain_result("正在计算最优排班方案（≤3厨师 × 每厨师≤3菜），请稍候…")
-        plans = self._calc_optimal(archive, top_n)
-        yield event.plain_result(self._fmt_optimal(plans, top_n))
+            per_k = 1
+        yield event.plain_result("正在计算最优排班方案（3厨/2厨/1厨 分组），请稍候…")
+        plans_by_k = self._calc_optimal(archive, per_k)
+        yield event.plain_result(self._fmt_optimal(plans_by_k, per_k))
 
     @filter.command("bcjh源", "切换图鉴数据源（foodgame 或 baochaojianghu）")
     async def cmd_source(self, event: AstrMessageEvent, source: str = ""):
