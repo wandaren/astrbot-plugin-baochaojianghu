@@ -132,14 +132,20 @@ class BaochaoJianghuPlugin(Star):
         return self.archives_dir / f"{user_id}.json"
 
     def _load_archive(self, user_id: str) -> dict:
-        """读取某用户存档，不存在返回空 dict"""
+        """读取某用户存档，不存在返回空 dict。
+        兼容旧版本：把 repGot/chefGot/chefUlt 的 key 统一归一化为 str。"""
         p = self._archive_path(user_id)
         if not p.exists():
             return {}
         try:
-            return json.loads(p.read_text(encoding="utf-8"))
+            archive = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
             return {}
+        for got_key in ("repGot", "chefGot", "chefUlt"):
+            got_map = archive.get(got_key)
+            if isinstance(got_map, dict):
+                archive[got_key] = {str(k): v for k, v in got_map.items()}
+        return archive
 
     def _save_archive(self, user_id: str, archive: dict):
         p = self._archive_path(user_id)
@@ -168,10 +174,15 @@ class BaochaoJianghuPlugin(Star):
 
     @staticmethod
     def _trans(arr, key) -> dict:
-        """官方存档字段转换：{id: 是否为'是'}"""
+        """官方存档字段转换：{str(id): 是否为'是'}
+        注意：官方接口 id 为字符串，图鉴 JSON 的 recipeId/chefId 为整数，
+        统一转 str 匹配，避免类型不一致导致查询不到。"""
         result = {}
         for item in arr or []:
-            result[item.get("id")] = (item.get(key) == "是")
+            iid = item.get("id")
+            if iid is None:
+                continue
+            result[str(iid)] = (item.get(key) == "是")
         return result
 
     def _parse_archive(self, data: dict, with_equip: bool = True) -> dict:
@@ -278,9 +289,9 @@ class BaochaoJianghuPlugin(Star):
         return text[:MAX_MSG_LEN]
 
     def _list_got(self, key: str, got_map: dict, id_key: str, keyword: str = "", limit: int = 30) -> str:
-        """列出已拥有的条目（got_map: id->bool）"""
+        """列出已拥有的条目（got_map: str(id)->bool）"""
         items = self._data.get(key, [])
-        owned = [it for it in items if got_map.get(it.get(id_key))]
+        owned = [it for it in items if got_map.get(str(it.get(id_key)))]
         if keyword:
             kw = keyword.lower()
             owned = [it for it in owned if kw in str(it.get("name", "")).lower()]
@@ -326,8 +337,8 @@ class BaochaoJianghuPlugin(Star):
         """
         rep_got = archive.get("repGot", {})
         chef_got = archive.get("chefGot", {})
-        recipes = [r for r in self._data.get("recipes", []) if rep_got.get(r.get("recipeId"))]
-        chefs = [c for c in self._data.get("chefs", []) if chef_got.get(c.get("chefId"))]
+        recipes = [r for r in self._data.get("recipes", []) if rep_got.get(str(r.get("recipeId")))]
+        chefs = [c for c in self._data.get("chefs", []) if chef_got.get(str(c.get("chefId")))]
         if not recipes or not chefs:
             return []
 
