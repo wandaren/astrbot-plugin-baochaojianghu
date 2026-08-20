@@ -22,6 +22,7 @@
   /我的菜谱 [关键词]         查看本人已拥有的菜谱
   /我的厨师 [关键词]         查看本人已拥有的厨师
   /我的进度                  查看本人存档概览（菜谱/厨师/修炼数量）
+  /最优 [数量]               基于已拥有厨师+菜谱，计算单位时间金币收益最高的搭配
   /bcjh源 <foodgame|baochaojianghu>   切换图鉴数据源
 
 数据策略：插件加载 10s 后首次拉取图鉴数据，之后按 refresh_hours 定时刷新，内存缓存。
@@ -53,6 +54,10 @@ TECH_NAMES = {
     "stirfry": "炒", "boil": "煮", "knife": "切",
     "fry": "炸", "bake": "烤", "steam": "蒸",
 }
+
+# 品级售价加成（与白菜菊花图鉴 constants.js 一致）
+GRADE_BUFF = {1: 0, 2: 10, 3: 30, 4: 50, 5: 100}
+TECH_KEYS = ["stirfry", "boil", "knife", "fry", "bake", "steam"]
 
 
 def _fmt_tech(item) -> str:
@@ -287,6 +292,80 @@ class BaochaoJianghuPlugin(Star):
             text += f"\n…共 {len(owned)} 条，仅显示前 {limit} 条"
         return text[:MAX_MSG_LEN]
 
+    # ---------- 收益计算 ----------
+    @staticmethod
+    def _calc_grade(chef: dict, recipe: dict) -> int:
+        """
+        计算厨师做某菜谱的品级（1-5，技法不足则 0 表示做不了）。
+        品级 = min(floor(厨师技法 / 菜谱需求技法))，封顶 5。
+        """
+        grade = 5
+        for key in TECH_KEYS:
+            need = recipe.get(key, 0) or 0
+            if need <= 0:
+                continue
+            have = chef.get(key, 0) or 0
+            if have < need:
+                return 0  # 技法不足，做不了
+            g = have // need
+            grade = min(grade, g)
+        return grade if grade >= 1 else 1
+
+    def _calc_recipe_price(self, recipe: dict, grade: int) -> int:
+        """加成后的售价 = ceil(基础价 × (100 + 品级加成%) / 100)"""
+        price = recipe.get("price", 0) or 0
+        ex = recipe.get("exPrice", 0) or 0  # 专精加成价
+        buff = GRADE_BUFF.get(grade, 0)
+        total = (price + ex) * (100 + buff)
+        return -(-total // 100)  # ceil
+
+    def _calc_optimal(self, archive: dict, top_n: int = 10) -> list:
+        """
+        基于已拥有厨师+菜谱，计算单位时间金币收益（金币/小时）最高的搭配。
+        返回 [(gold_per_hour, recipe, chef, grade), ...] 降序。
+        """
+        rep_got = archive.get("repGot", {})
+        chef_got = archive.get("chefGot", {})
+        recipes = [r for r in self._data.get("recipes", []) if rep_got.get(r.get("recipeId"))]
+        chefs = [c for c in self._data.get("chefs", []) if chef_got.get(c.get("chefId"))]
+        if not recipes or not chefs:
+            return []
+
+        results = []
+        for recipe in recipes:
+            time_s = recipe.get("time", 0) or 1
+            best_chef = None
+            best_grade = 0
+            best_eff = 0
+            for chef in chefs:
+                grade = self._calc_grade(chef, recipe)
+                if grade <= 0:
+                    continue
+                price = self._calc_recipe_price(recipe, grade)
+                eff = price * 3600 // time_s
+                if eff > best_eff:
+                    best_eff = eff
+                    best_chef = chef
+                    best_grade = grade
+            if best_chef and best_eff > 0:
+                results.append((best_eff, recipe, best_chef, best_grade))
+        results.sort(key=lambda x: x[0], reverse=True)
+        return results[:top_n]
+
+    def _fmt_optimal(self, results: list, top_n: int) -> str:
+        if not results:
+            return "无法计算：请先 /导入 官方存档，并确认已拥有至少一个厨师和一个菜谱。"
+        lines = [f"[最优金币搭配 Top {len(results)}]（单位时间收益）"]
+        for i, (eff, recipe, chef, grade) in enumerate(results, 1):
+            price = self._calc_recipe_price(recipe, grade)
+            buff = GRADE_BUFF.get(grade, 0)
+            lines.append(
+                f"{i}. {recipe.get('name')} × {chef.get('name')} "
+                f"[品级{grade} +{buff}% → 售价{price}] {eff}金币/h"
+            )
+        lines.append(f"\n收益=加成后售价×3600/制作时间；共匹配 {len(results)} 条（显示前 {min(top_n, len(results))} 条）")
+        return "\n".join(lines)[:MAX_MSG_LEN]
+
     # ---------- 指令 ----------
     @filter.command("菜谱", "查询菜谱（品阶/技法/材料/售价/解锁）")
     async def cmd_recipe(self, event: AstrMessageEvent, keyword: str = ""):
@@ -409,6 +488,22 @@ class BaochaoJianghuPlugin(Star):
             f"已修炼厨师: {got_ult}\n"
             f"遗玉/厨具数据: {'已导入' if archive.get('chefAmber') or archive.get('chefEquip') else '未导入'}"
         )
+
+    @filter.command("最优", "计算已拥有厨师+菜谱中单位时间金币收益最高的搭配")
+    async def cmd_optimal(self, event: AstrMessageEvent, num: str = ""):
+        await self._ensure_data()
+        user_id = str(event.get_sender_id())
+        archive = self._load_archive(user_id)
+        if not archive:
+            yield event.plain_result("尚未导入官方存档，先使用 /导入 <校验码>。")
+            return
+        try:
+            top_n = max(1, min(20, int(num))) if num.strip() else 10
+        except ValueError:
+            top_n = 10
+        yield event.plain_result("正在计算最优搭配，请稍候…")
+        results = self._calc_optimal(archive, top_n)
+        yield event.plain_result(self._fmt_optimal(results, top_n))
 
     @filter.command("bcjh源", "切换图鉴数据源（foodgame 或 baochaojianghu）")
     async def cmd_source(self, event: AstrMessageEvent, source: str = ""):
