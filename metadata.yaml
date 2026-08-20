@@ -7,7 +7,7 @@ astrbot_version: ">=4.5.7"
 display_name: 爆炒江湖图鉴
 short_desc: 聊天内查询爆炒江湖菜谱/厨师/厨具/任务/材料/遗玉
 support_platforms:
-  - qq
-  - wechat
-  - discord
+  - aiocqhttp
+  - qq_official
   - telegram
+  - discord

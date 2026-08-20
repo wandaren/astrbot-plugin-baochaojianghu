@@ -23,9 +23,9 @@ from datetime import datetime, timezone
 
 import aiohttp
 
+from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star
-from astrbot.api import logger
 
 DATA_URLS = {
     "foodgame": "https://foodgame.github.io/data/data.min.json",
@@ -52,13 +52,17 @@ def _fmt_tech(item) -> str:
 
 
 class BaochaoJianghuPlugin(Star):
-    def __init__(self, context: Context, source: str = "baochaojianghu",
-                 refresh_hours: float = 6):
+    def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
+        data_cfg = config.get("DATA_SOURCE", {}) if config else {}
+        source = data_cfg.get("SOURCE", "baochaojianghu")
         if source not in DATA_URLS:
             source = "baochaojianghu"
         self.source = source
-        self.refresh_hours = refresh_hours
+        try:
+            self.refresh_hours = float(data_cfg.get("REFRESH_HOURS", 6))
+        except (TypeError, ValueError):
+            self.refresh_hours = 6.0
         self._data: dict = {}
         self._material_map: dict = {}
         self._data_ts: float = 0.0
@@ -110,7 +114,6 @@ class BaochaoJianghuPlugin(Star):
             return []
         exact = [it for it in items if str(it.get("name", "")).strip() == keyword.strip()]
         hits = exact or [it for it in items if kw in str(it.get("name", "")).lower()]
-        # 精确匹配排前
         return hits[:limit]
 
     # ---------- 格式化 ----------
@@ -131,12 +134,14 @@ class BaochaoJianghuPlugin(Star):
         )
 
     def _fmt_chef(self, c) -> str:
+        gender = c.get("gender", "?")
+        gender_str = "男" if gender == "male" else ("女" if gender == "female" else str(gender))
         skill = c.get("skill") or c.get("skills") or "-"
         if isinstance(skill, (list, dict)):
             skill = str(skill)
         task = c.get("task") or c.get("quest") or "-"
         return (
-            f"[厨师] {c.get('name')}（{'男' if c.get('gender') == 'male' else '女' if c.get('gender') == 'female' else c.get('gender', '?')}）\n"
+            f"[厨师] {c.get('name')}（{gender_str}）\n"
             f"星级: {c.get('star', c.get('rarity', '?'))}\n"
             f"技法: {_fmt_tech(c)}\n"
             f"技能: {skill}\n"
@@ -180,61 +185,61 @@ class BaochaoJianghuPlugin(Star):
         return text[:MAX_MSG_LEN]
 
     # ---------- 指令 ----------
-    @filter.command("菜谱")
-    async def cmd_recipe(self, event: AstrMessageEvent, *args):
+    @filter.command("菜谱", "查询菜谱（品阶/技法/材料/售价/解锁）")
+    async def cmd_recipe(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
-        kw = " ".join(args).strip()
+        kw = keyword.strip()
         if not kw:
             yield event.plain_result("用法: /菜谱 <名称或关键词>")
             return
         yield event.plain_result(self._query("recipes", kw, self._fmt_recipe))
 
-    @filter.command("厨师")
-    async def cmd_chef(self, event: AstrMessageEvent, *args):
+    @filter.command("厨师", "查询厨师（星级/技法/技能/修炼任务）")
+    async def cmd_chef(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
-        kw = " ".join(args).strip()
+        kw = keyword.strip()
         if not kw:
             yield event.plain_result("用法: /厨师 <名称或关键词>")
             return
         yield event.plain_result(self._query("chefs", kw, self._fmt_chef))
 
-    @filter.command("厨具")
-    async def cmd_equip(self, event: AstrMessageEvent, *args):
+    @filter.command("厨具", "查询厨具（等级/加成）")
+    async def cmd_equip(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
-        kw = " ".join(args).strip()
+        kw = keyword.strip()
         if not kw:
             yield event.plain_result("用法: /厨具 <名称或关键词>")
             return
         yield event.plain_result(self._query("equips", kw, self._fmt_equip))
 
-    @filter.command("任务")
-    async def cmd_quest(self, event: AstrMessageEvent, *args):
+    @filter.command("任务", "查询任务")
+    async def cmd_quest(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
-        kw = " ".join(args).strip()
+        kw = keyword.strip()
         if not kw:
             yield event.plain_result("用法: /任务 <关键词或编号>")
             return
         yield event.plain_result(self._query("quests", kw, self._fmt_quest))
 
-    @filter.command("材料")
-    async def cmd_material(self, event: AstrMessageEvent, *args):
+    @filter.command("材料", "查询材料获取方式")
+    async def cmd_material(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
-        kw = " ".join(args).strip()
+        kw = keyword.strip()
         if not kw:
             yield event.plain_result("用法: /材料 <名称或关键词>")
             return
         yield event.plain_result(self._query("materials", kw, self._fmt_material))
 
-    @filter.command("遗玉")
-    async def cmd_amber(self, event: AstrMessageEvent, *args):
+    @filter.command("遗玉", "查询遗玉加成")
+    async def cmd_amber(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
-        kw = " ".join(args).strip()
+        kw = keyword.strip()
         if not kw:
             yield event.plain_result("用法: /遗玉 <名称或关键词>")
             return
         yield event.plain_result(self._query("ambers", kw, self._fmt_amber))
 
-    @filter.command("bcjh源")
+    @filter.command("bcjh源", "切换数据源（foodgame 或 baochaojianghu）")
     async def cmd_source(self, event: AstrMessageEvent, source: str = ""):
         if source not in DATA_URLS:
             yield event.plain_result(

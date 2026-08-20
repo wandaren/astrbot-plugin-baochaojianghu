@@ -56,19 +56,20 @@ astrbot plugin install --editable ./astrbot-plugin-baochaojianghu
 
 ## 插件配置
 
-插件类构造函数支持两个参数（可在插件设置中调整）：
+安装后在 AstrBot WebUI 的插件设置中可调整（对应 `_conf_schema.json`）：
 
-- `source`: 默认数据源，可选 `baochaojianghu` / `foodgame`，默认 `baochaojianghu`
-- `refresh_hours`: 数据缓存刷新间隔（小时），默认 `6`
+- `SOURCE`: 默认数据源，可选 `baochaojianghu`（默认）/ `foodgame`
+- `REFRESH_HOURS`: 数据缓存刷新间隔（小时），默认 `6`
 
 ## 开发
 
 ```bash
 # 目录结构
 .
-├── main.py          # 插件主逻辑
-├── metadata.yaml    # 插件元数据
-├── requirements.txt # 依赖
+├── main.py            # 插件主逻辑
+├── metadata.yaml      # 插件元数据
+├── _conf_schema.json  # 插件配置 Schema（WebUI 可调）
+├── requirements.txt   # 依赖
 └── README.md
 ```
 
