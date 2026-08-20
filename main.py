@@ -330,10 +330,16 @@ class BaochaoJianghuPlugin(Star):
         total = (price + ex) * (100 + buff)
         return -(-total // 100)  # ceil
 
-    def _calc_optimal(self, archive: dict, top_n: int = 10) -> list:
+    def _calc_optimal(self, archive: dict, top_n: int = 3,
+                      max_chefs: int = 3, max_dishes: int = 3) -> list:
         """
-        基于已拥有厨师+菜谱，计算单位时间金币收益（金币/小时）最高的搭配。
-        返回 [(gold_per_hour, recipe, chef, grade), ...] 降序。
+        排班优化：最多上 max_chefs 个厨师，每厨师最多做 max_dishes 个菜，
+        菜谱不跨厨师重复，求单位时间金币收益（金币/小时）最大的整体方案。
+
+        返回 [{"total": int, "items": [(chef, [(eff, recipe, grade), ...]), ...]}, ...]
+        按 total 降序，取 top_n 个方案。
+        算法：候选厨师裁剪（单人 Top3 收益排序前 N）→ 枚举 1..max_chefs 组合
+              → 组合内用 DP 精确分配菜谱（状态=各厨师已用菜位数）。
         """
         rep_got = archive.get("repGot", {})
         chef_got = archive.get("chefGot", {})
@@ -342,39 +348,125 @@ class BaochaoJianghuPlugin(Star):
         if not recipes or not chefs:
             return []
 
-        results = []
-        for recipe in recipes:
-            time_s = recipe.get("time", 0) or 1
-            best_chef = None
-            best_grade = 0
-            best_eff = 0
-            for chef in chefs:
-                grade = self._calc_grade(chef, recipe)
+        # 1. 预计算每厨师的候选菜（收益降序）
+        chef_cands = []
+        for chef in chefs:
+            cands = []
+            for r in recipes:
+                grade = self._calc_grade(chef, r)
                 if grade <= 0:
                     continue
-                price = self._calc_recipe_price(recipe, grade)
+                price = self._calc_recipe_price(r, grade)
+                time_s = r.get("time", 0) or 1
                 eff = price * 3600 // time_s
-                if eff > best_eff:
-                    best_eff = eff
-                    best_chef = chef
-                    best_grade = grade
-            if best_chef and best_eff > 0:
-                results.append((best_eff, recipe, best_chef, best_grade))
-        results.sort(key=lambda x: x[0], reverse=True)
-        return results[:top_n]
+                cands.append((eff, r, grade))
+            cands.sort(key=lambda x: x[0], reverse=True)
+            chef_cands.append(cands)
 
-    def _fmt_optimal(self, results: list, top_n: int) -> str:
-        if not results:
+        # 2. 候选厨师裁剪：按单人 Top max_dishes 收益排序，取前 N
+        def _solo(cands):
+            return sum(e for e, _, _ in cands[:max_dishes])
+
+        ranked = sorted(range(len(chefs)), key=lambda i: _solo(chef_cands[i]), reverse=True)
+        cand_idx = ranked[:25]
+
+        # 3. 枚举组合 + 组合内 DP
+        plans = []
+        import itertools
+        for k in range(1, min(max_chefs, len(cand_idx)) + 1):
+            for combo in itertools.combinations(cand_idx, k):
+                plan = self._schedule_for_combo(combo, chefs, chef_cands, max_dishes)
+                if plan:
+                    plans.append(plan)
+        plans.sort(key=lambda p: p["total"], reverse=True)
+        return plans[:top_n]
+
+    def _schedule_for_combo(self, combo: tuple, chefs: list, chef_cands: list,
+                            max_dishes: int = 3) -> dict:
+        """
+        给定厨师组合，用 DP 求菜谱分配使总收益最大。
+        状态 = 各厨师已用菜位数 (u0, u1, ...)，逐菜谱转移（不选/给某厨师）。
+        返回 {"total": int, "items": [(chef, [(eff, recipe, grade), ...]), ...]}
+        """
+        # 候选菜谱：组合内各厨师 Top 8 菜谱并集
+        cand_map = {}
+        for ci in combo:
+            for eff, r, g in chef_cands[ci][:8]:
+                cand_map[r.get("recipeId")] = r
+        recipes_list = list(cand_map.values())
+        k = len(combo)
+        # 每厨师收益查找表: recipeId -> (eff, grade)
+        gains = []
+        for ci in combo:
+            m = {r.get("recipeId"): (eff, g) for eff, r, g in chef_cands[ci]}
+            gains.append(m)
+
+        states = {(0,) * k: 0}  # state -> total_eff
+        parent = {}             # (recipe_idx, state) -> (prev_state, chef_idx_or_None)
+        for ridx, r in enumerate(recipes_list):
+            new_states = dict(states)
+            for state, val in states.items():
+                for ci in range(k):
+                    if state[ci] >= max_dishes:
+                        continue
+                    ginfo = gains[ci].get(r.get("recipeId"))
+                    if not ginfo:
+                        continue
+                    eff, _g = ginfo
+                    ns = list(state)
+                    ns[ci] += 1
+                    ns = tuple(ns)
+                    nv = val + eff
+                    if nv > new_states.get(ns, -1):
+                        new_states[ns] = nv
+                        parent[(ridx, ns)] = (state, ci)
+            states = new_states
+
+        best_state = max(states, key=lambda s: states[s])
+        total = states[best_state]
+        if total <= 0:
+            return None
+
+        # 回溯分配
+        assign = {ci: [] for ci in range(k)}
+        state = best_state
+        for ridx in range(len(recipes_list) - 1, -1, -1):
+            key = (ridx, state)
+            if key in parent:
+                prev_state, ci = parent[key]
+                if ci is not None:
+                    r = recipes_list[ridx]
+                    eff, g = gains[ci][r.get("recipeId")]
+                    assign[ci].append((eff, r, g))
+                state = prev_state
+
+        items = []
+        for ci in range(k):
+            if assign[ci]:
+                assign[ci].sort(key=lambda x: x[0], reverse=True)
+                items.append((chefs[combo[ci]], assign[ci]))
+        items.sort(key=lambda x: sum(e for e, _, _ in x[1]), reverse=True)
+        return {"total": total, "items": items}
+
+    @staticmethod
+    def _fmt_eff(eff: int) -> str:
+        return f"{eff:,}"
+
+    def _fmt_optimal(self, plans: list, top_n: int) -> str:
+        if not plans:
             return "无法计算：请先 /导入 官方存档，并确认已拥有至少一个厨师和一个菜谱。"
-        lines = [f"[最优金币搭配 Top {len(results)}]（单位时间收益）"]
-        for i, (eff, recipe, chef, grade) in enumerate(results, 1):
-            price = self._calc_recipe_price(recipe, grade)
-            buff = GRADE_BUFF.get(grade, 0)
-            lines.append(
-                f"{i}. {recipe.get('name')} × {chef.get('name')} "
-                f"[品级{grade} +{buff}% → 售价{price}] {eff}金币/h"
-            )
-        lines.append(f"\n收益=加成后售价×3600/制作时间；共匹配 {len(results)} 条（显示前 {min(top_n, len(results))} 条）")
+        lines = [f"[最优排班方案 Top {len(plans)}]（≤3厨师 × 每厨师≤3菜，菜不重复）"]
+        for idx, plan in enumerate(plans, 1):
+            total = plan["total"]
+            n_chef = len(plan["items"])
+            n_dish = sum(len(d) for _, d in plan["items"])
+            lines.append(f"\n── 方案{idx}：{n_chef}厨师 × {n_dish}菜，总收益 {self._fmt_eff(total)} 金币/h ──")
+            for chef, dishes in plan["items"]:
+                lines.append(f"👨‍🍳 {chef.get('name')}（{len(dishes)}菜）")
+                for eff, r, grade in dishes:
+                    buff = GRADE_BUFF.get(grade, 0)
+                    lines.append(f"  · {r.get('name')} [品级{grade} +{buff}%] {self._fmt_eff(eff)}金币/h")
+        lines.append(f"\n收益=加成后售价×3600/制作时间；显示前 {min(top_n, len(plans))} 个方案")
         return "\n".join(lines)[:MAX_MSG_LEN]
 
     # ---------- 指令 ----------
@@ -500,7 +592,7 @@ class BaochaoJianghuPlugin(Star):
             f"遗玉/厨具数据: {'已导入' if archive.get('chefAmber') or archive.get('chefEquip') else '未导入'}"
         )
 
-    @filter.command("最优", "计算已拥有厨师+菜谱中单位时间金币收益最高的搭配")
+    @filter.command("最优", "计算排班方案：最多3厨师×每厨师3菜，单位时间金币收益最高")
     async def cmd_optimal(self, event: AstrMessageEvent, num: str = ""):
         await self._ensure_data()
         user_id = str(event.get_sender_id())
@@ -509,12 +601,12 @@ class BaochaoJianghuPlugin(Star):
             yield event.plain_result("尚未导入官方存档，先使用 /导入 <校验码>。")
             return
         try:
-            top_n = max(1, min(20, int(num))) if num.strip() else 10
+            top_n = max(1, min(5, int(num))) if num.strip() else 3
         except ValueError:
-            top_n = 10
-        yield event.plain_result("正在计算最优搭配，请稍候…")
-        results = self._calc_optimal(archive, top_n)
-        yield event.plain_result(self._fmt_optimal(results, top_n))
+            top_n = 3
+        yield event.plain_result("正在计算最优排班方案（≤3厨师 × 每厨师≤3菜），请稍候…")
+        plans = self._calc_optimal(archive, top_n)
+        yield event.plain_result(self._fmt_optimal(plans, top_n))
 
     @filter.command("bcjh源", "切换图鉴数据源（foodgame 或 baochaojianghu）")
     async def cmd_source(self, event: AstrMessageEvent, source: str = ""):
