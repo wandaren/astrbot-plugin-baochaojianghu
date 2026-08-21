@@ -155,6 +155,14 @@ class BaochaoJianghuPlugin(Star):
                 self._invitation_map.setdefault(gift.get("recipeId"), []).append(
                     (g.get("name"), gift.get("gift"))
                 )
+        # 技能表：skillId -> skill 对象（厨具/遗玉引用 desc 与 effect）
+        self._skill_map = {
+            s.get("skillId"): s
+            for s in data.get("skills", [])
+            if s.get("skillId") is not None
+        }
+        # 遗玉 type: 1/2/3 -> 红/绿/蓝（对齐图鉴站 item.color）
+        self._amber_color_map = {1: "红", 2: "绿", 3: "蓝"}
 
     async def _background_refresh(self):
         await asyncio.sleep(10)
@@ -346,9 +354,19 @@ class BaochaoJianghuPlugin(Star):
         )
 
     def _fmt_equip(self, e) -> str:
+        """厨具详情：品阶星 + 技能描述（对齐图鉴站 initData）"""
+        rarity = e.get("rarity", 1) or 1
+        stars = "★" * rarity
+        # skill 是技能 ID 列表，映射为 desc
+        skills = []
+        for sid in e.get("skill", []) or []:
+            desc = self._skill_map.get(sid, {}).get("desc")
+            if desc:
+                skills.append(desc)
         return (
-            f"[厨具] {e.get('name')}（等级{e.get('level', '?')}）\n"
-            f"加成: {e.get('buff', e.get('effect', '-'))}"
+            f"{e.get('galleryId', e.get('equipId'))} {e.get('name')} {stars}\n"
+            f"来源: {e.get('origin', '-')}\n"
+            f"技能: {'; '.join(skills) if skills else '-'}"
         )
 
     def _fmt_quest(self, q) -> str:
@@ -365,9 +383,30 @@ class BaochaoJianghuPlugin(Star):
         )
 
     def _fmt_amber(self, a) -> str:
+        """遗玉详情：品阶星 + 颜色 + 技能 0~4 级效果（对齐图鉴站 initData）"""
+        rarity = a.get("rarity", 1) or 1
+        stars = "★" * rarity
+        color = self._amber_color_map.get(a.get("type"), str(a.get("type", "?")))
+        # 技能：desc 中的 _ 按 0~4 级替换（基础值 + i × amplification）
+        skills = []
+        for sid in a.get("skill", []) or []:
+            skill = self._skill_map.get(sid) or {}
+            desc = a.get("desc") or skill.get("desc")
+            if not desc:
+                continue
+            if "_" in desc:
+                effects = skill.get("effect") or []
+                base = effects[0].get("value", 0) if effects else 0
+                amp = a.get("amplification", 0) or 0
+                lv0 = desc.replace("_", str(base))
+                lv4 = desc.replace("_", str(base + 4 * amp))
+                skills.append(f"{lv0} ~ {lv4}（0~4级）")
+            else:
+                skills.append(desc)
         return (
-            f"[遗玉] {a.get('name')}（{a.get('type', '?')}）\n"
-            f"加成: {a.get('buff', a.get('effect', '-'))}"
+            f"{a.get('galleryId', a.get('amberId'))} {a.get('name')} {stars}（{color}）\n"
+            f"来源: {a.get('origin', '-')}\n"
+            f"技能: {'; '.join(skills) if skills else '-'}"
         )
 
     def _query(self, key: str, keyword: str, formatter) -> str:
