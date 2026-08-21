@@ -452,17 +452,60 @@ class BaochaoJianghuPlugin(Star):
         return self._paged(lines, len(hits), page, page_size, cmd or key, keyword.strip())
 
     def _list_got(self, key: str, got_map: dict, id_key: str, keyword: str = "",
-                  page: int = 1, page_size: int = 9, cmd: str = "") -> str:
-        """列出已拥有的条目（got_map: str(id)->bool），每页 page_size 个"""
+                  page: int = 1, page_size: int = 9, cmd: str = "") -> tuple:
+        """列出已拥有的条目（got_map: str(id)->bool），每页 page_size 个。
+        返回 (text, page_items)，page_items 供按钮渲染使用。"""
         items = self._data.get(key, [])
         owned = [it for it in items if got_map.get(str(it.get(id_key)))]
         if keyword:
             kw = keyword.lower()
             owned = [it for it in owned if kw in str(it.get("name", "")).lower()]
         if not owned:
-            return f"没有已拥有的{key}（或关键词无匹配）。"
-        lines = [f"· {it.get('name')}" for it in owned]
-        return self._paged(lines, len(owned), page, page_size, cmd or key, keyword.strip())
+            return f"没有已拥有的{key}（或关键词无匹配）。", []
+        total_pages = max(1, (len(owned) + page_size - 1) // page_size)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * page_size
+        page_items = owned[start:start + page_size]
+        lines = [f"· {it.get('name')}" for it in page_items]
+        text = self._paged(lines, len(owned), page, page_size, cmd or key, keyword.strip())
+        return text, page_items
+
+    async def _try_send_buttons(self, event, page_items: list, query_cmd: str) -> bool:
+        """
+        尝试用 astrbot_plugin_buttons 插件发送可点击按钮（每行 3 个）。
+        按钮点击后直接发送 '/<query_cmd> <菜名>' 快捷指令。
+        未安装/平台不支持/发送失败时静默返回 False，调用方回退纯文本。
+        """
+        if not page_items:
+            return False
+        try:
+            bp = self.context.get_registered_star("astrbot_plugin_buttons")
+            if not bp or not bp.activated:
+                return False
+            bot = getattr(event, "bot", None)
+            if bot is None:
+                return False
+            cls = bp.star_cls
+            keyboard = []
+            row = []
+            for it in page_items:
+                name = str(it.get("name", ""))
+                row.append({"label": name, "callback": f"/{query_cmd} {name}", "enter": True})
+                if len(row) == 3:
+                    keyboard.append(row)
+                    row = []
+            if row:
+                keyboard.append(row)
+            await cls.send_button(
+                client=bot,
+                keyboard=keyboard,
+                group_id=event.get_group_id(),
+                user_id=event.get_sender_id(),
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"[bcjh] 按钮发送失败，回退纯文本: {e}")
+            return False
 
     # ---------- 收益计算 ----------
     @staticmethod
@@ -728,7 +771,12 @@ class BaochaoJianghuPlugin(Star):
             yield event.plain_result("尚未导入官方存档，先使用 /导入 <校验码>。")
             return
         kw, page = self._parse_keyword_page(keyword)
-        yield event.plain_result(self._list_got("recipes", archive.get("repGot", {}), "recipeId", kw, page, cmd="我的菜谱"))
+        text, page_items = self._list_got(
+            "recipes", archive.get("repGot", {}), "recipeId", kw, page, cmd="我的菜谱"
+        )
+        # 尝试发送可点击按钮（安装了 astrbot_plugin_buttons 时生效）
+        await self._try_send_buttons(event, page_items, query_cmd="菜谱")
+        yield event.plain_result(text)
 
     @filter.command("我的厨师", "查看本人已拥有的厨师（/我的厨师 p2 翻页）")
     async def cmd_my_chefs(self, event: AstrMessageEvent, keyword: str = ""):
@@ -739,7 +787,11 @@ class BaochaoJianghuPlugin(Star):
             yield event.plain_result("尚未导入官方存档，先使用 /导入 <校验码>。")
             return
         kw, page = self._parse_keyword_page(keyword)
-        yield event.plain_result(self._list_got("chefs", archive.get("chefGot", {}), "chefId", kw, page, cmd="我的厨师"))
+        text, page_items = self._list_got(
+            "chefs", archive.get("chefGot", {}), "chefId", kw, page, cmd="我的厨师"
+        )
+        await self._try_send_buttons(event, page_items, query_cmd="厨师")
+        yield event.plain_result(text)
 
     @filter.command("我的进度", "查看本人存档概览")
     async def cmd_my_progress(self, event: AstrMessageEvent):
