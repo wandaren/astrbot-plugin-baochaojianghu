@@ -60,6 +60,14 @@ TECH_NAMES = {
 GRADE_BUFF = {1: 0, 2: 10, 3: 30, 4: 50, 5: 100}
 TECH_KEYS = ["stirfry", "boil", "knife", "fry", "bake", "steam"]
 
+# 调料显示名（与图鉴站 condimentMap 一致）
+CONDIMENT_MAP = {
+    "Sweet": "甜", "Sour": "酸", "Spicy": "辣",
+    "Salty": "咸", "Bitter": "苦", "Tasty": "鲜",
+}
+# 升阶贵客档位
+DEGREE_TAGS = ["优", "特", "神"]
+
 
 def _fmt_tech(item) -> str:
     parts = []
@@ -106,17 +114,46 @@ class BaochaoJianghuPlugin(Star):
             if not self._data or (now - self._data_ts) > self.refresh_hours * 3600:
                 self._data = await self._fetch(self.source)
                 self._data_ts = now
-                # 材料 ID -> 名称 映射
-                self._material_map = {
-                    m.get("id"): m.get("name")
-                    for m in self._data.get("materials", [])
-                    if m.get("id") is not None
-                }
+                self._build_indexes()
                 logger.info(
                     f"[bcjh] 图鉴数据已加载: {self.source}, "
                     f"菜谱 {len(self._data.get('recipes', []))}, "
                     f"厨师 {len(self._data.get('chefs', []))}, "
                     f"任务 {len(self._data.get('quests', []))}"
+                )
+
+    def _build_indexes(self):
+        """构建查询索引（对齐白菜菊花图鉴 initData 的预计算逻辑）"""
+        data = self._data
+        # 材料 materialId -> name
+        self._material_map = {
+            m.get("materialId"): m.get("name")
+            for m in data.get("materials", [])
+            if m.get("materialId") is not None
+        }
+        # 菜谱 recipeId -> recipe 对象
+        self._recipe_by_id = {r.get("recipeId"): r for r in data.get("recipes", [])}
+        # 合成组合：recipeId -> [可合成的组合菜名]（某菜是组合配方的一部分）
+        # combos: {recipeId: 组合菜id, recipes: [组成菜id...]}
+        self._combo_map = {}  # 组成菜id -> [组合菜名...]
+        for combo in data.get("combos", []):
+            combo_rep = self._recipe_by_id.get(combo.get("recipeId"))
+            combo_name = combo_rep.get("name") if combo_rep else f"组合{combo.get('recipeId')}"
+            for rid in combo.get("recipes", []):
+                self._combo_map.setdefault(rid, []).append(combo_name)
+        # 贵客表：菜名 -> [(贵客, 古董/礼物)]（开业贵客 normal_guests）
+        self._guest_map = {}
+        for g in data.get("guests", []):
+            for gift in g.get("gifts", []):
+                self._guest_map.setdefault(gift.get("recipe"), []).append(
+                    (g.get("name"), gift.get("antique"))
+                )
+        # 邀请贵客表：recipeId -> [(贵客名, 礼物)]（宴会贵客 invitation_guests）
+        self._invitation_map = {}
+        for g in data.get("invitationGuests", []):
+            for gift in g.get("gifts", []):
+                self._invitation_map.setdefault(gift.get("recipeId"), []).append(
+                    (g.get("name"), gift.get("gift"))
                 )
 
     async def _background_refresh(self):
@@ -222,21 +259,76 @@ class BaochaoJianghuPlugin(Star):
         return hits[:limit]
 
     # ---------- 格式化 ----------
+    @staticmethod
+    def _fmt_time(sec) -> str:
+        """秒 -> 图鉴站 formatTime 格式（如 62 -> 1分2秒）"""
+        sec = int(sec or 0)
+        if sec <= 0:
+            return "-"
+        rst = ""
+        DAY, HOUR, MIN = 86400, 3600, 60
+        if sec >= DAY:
+            rst += f"{sec // DAY}天"
+            sec %= DAY
+        if sec >= HOUR:
+            rst += f"{sec // HOUR}小时"
+            sec %= HOUR
+        if sec >= MIN:
+            rst += f"{sec // MIN}分"
+            sec %= MIN
+        if sec > 0:
+            rst += f"{sec}秒"
+        return rst or "-"
+
     def _fmt_recipe(self, r) -> str:
-        mats = ", ".join(
-            f"{self._material_map.get(m.get('material'), m.get('material'))}x{m.get('quantity')}"
-            for m in r.get("materials", [])
-        ) or "-"
-        guests = r.get("guests") or []
-        guest_str = "/".join(g.get("guest", "?") for g in guests) if guests else "-"
-        return (
-            f"[菜谱] {r.get('name')}（品阶{r.get('rarity')}）\n"
-            f"技法: {_fmt_tech(r)}\n"
-            f"材料: {mats}\n"
-            f"售价: {r.get('price')}  用时: {r.get('time')}s  日上限: {r.get('limit')}\n"
-            f"解锁: {r.get('unlock', '-')}\n"
-            f"贵客: {guest_str}"
-        )
+        """菜谱详情（对齐白菜菊花图鉴 initData 预计算后的展示格式）"""
+        rid = r.get("recipeId")
+        rarity = r.get("rarity", 1) or 1
+        price = r.get("price", 0) or 0
+        ex_price = r.get("exPrice", 0) or 0
+        time_s = r.get("time", 0) or 1
+        limit = r.get("limit", 0) or 0
+        # 食材
+        mats = []
+        total_cnt = 0
+        for m in r.get("materials", []):
+            name = self._material_map.get(m.get("material"), f"材料{m.get('material')}")
+            qty = m.get("quantity", 0) or 0
+            total_cnt += qty
+            mats.append(f"{name}*{qty}")
+        # 技法（仅显示非0）
+        techs = []
+        for key in TECH_KEYS:
+            v = r.get(key, 0) or 0
+            if v:
+                techs.append(f"{TECH_NAMES[key]}*{v}")
+        # 合成（某菜作为配方组成）
+        combo_names = self._combo_map.get(rid, [])
+        # 开业贵客（普通贵客）
+        normal_guests = self._guest_map.get(r.get("name"), [])
+        # 宴会贵客（邀请贵客）
+        invitation = self._invitation_map.get(rid, [])
+        # 升阶贵客（guests 字段 优/特/神）
+        degree = [f"{DEGREE_TAGS[i]}-{g.get('guest')}" for i, g in enumerate(r.get("guests", []))]
+
+        lines = [
+            f"{r.get('galleryId', rid)} {r.get('name')} {'🔥' * rarity}",
+            f"💰: {price}(+{ex_price}) --- {int(3600 / time_s * price)}/h",
+            f"调料: {CONDIMENT_MAP.get(r.get('condiment'), r.get('condiment', '-'))}",
+            f"来源: {r.get('origin', '-')}",
+            f"单时间: {self._fmt_time(time_s)}",
+            f"总时间: {self._fmt_time(time_s * limit)} ({limit}份)",
+            f"技法: {' '.join(techs) if techs else '-'}",
+            f"食材: {', '.join(mats) if mats else '-'}",
+            f"耗材效率: {int(3600 / time_s * total_cnt) if total_cnt else 0}/h",
+            f"可解锁: {r.get('unlock', '-')}",
+            f"可合成: {', '.join(combo_names) if combo_names else '-'}",
+            f"神级符文: {r.get('gift', '-')}",
+            f"开业贵客: {', '.join(f'{n}-{a}' for n, a in normal_guests) if normal_guests else '-'}",
+            f"宴会贵客: {', '.join(f'{n}-{g}' for n, g in invitation) if invitation else '-'}",
+            f"升阶贵客: {', '.join(degree) if degree else '-'}",
+        ]
+        return "\n".join(lines)
 
     def _fmt_chef(self, c) -> str:
         gender = c.get("gender", "?")
