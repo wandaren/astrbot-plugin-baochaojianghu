@@ -443,7 +443,8 @@ class BaochaoJianghuPlugin(Star):
     def _list_got(self, key: str, got_map: dict, id_key: str, keyword: str = "",
                   page: int = 1, page_size: int = 9, cmd: str = "") -> tuple:
         """列出已拥有的条目（got_map: str(id)->bool），每页 page_size 个。
-        返回 (text, page_items)，page_items 供按钮渲染使用。"""
+        返回 (text, page_items)，page_items 供按钮渲染使用。
+        注意：切片统一由 _paged 完成，这里只传全部行，避免双重切片。"""
         items = self._data.get(key, [])
         owned = [it for it in items if got_map.get(str(it.get(id_key)))]
         if keyword:
@@ -451,12 +452,13 @@ class BaochaoJianghuPlugin(Star):
             owned = [it for it in owned if kw in str(it.get("name", "")).lower()]
         if not owned:
             return f"没有已拥有的{key}（或关键词无匹配）。", []
+        lines = [f"· {it.get('name')}" for it in owned]
+        text = self._paged(lines, len(owned), page, page_size, cmd or key, keyword.strip())
+        # 当前页 items（供按钮渲染）
         total_pages = max(1, (len(owned) + page_size - 1) // page_size)
         page = max(1, min(page, total_pages))
         start = (page - 1) * page_size
         page_items = owned[start:start + page_size]
-        lines = [f"· {it.get('name')}" for it in page_items]
-        text = self._paged(lines, len(owned), page, page_size, cmd or key, keyword.strip())
         return text, page_items
 
     async def _try_send_buttons(self, event, page_items: list, query_cmd: str) -> bool:
