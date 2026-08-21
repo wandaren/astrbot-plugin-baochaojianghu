@@ -2,9 +2,7 @@
 爆炒江湖图鉴查询插件 (astrbot-plugin-baochaojianghu)
 
 数据源（公开静态 JSON，无鉴权）：
-  - https://h5.baochaojianghu.com/data/data.min.json   (白菜菊花图鉴, 默认, ~2MB, 更新更全)
-  - https://foodgame.github.io/data/data.min.json      (图鉴站, 较旧, ~1.7MB)
-两者 JSON 顶层结构完全一致。
+  https://h5.baochaojianghu.com/data/data.min.json   (白菜菊花图鉴, ~2MB)
 
 官方数据导入（与 h5.baochaojianghu.com 图鉴一致）：
   用户在《爆炒江湖》游戏内「设置」页获取校验码，插件调用
@@ -23,7 +21,6 @@
   /我的厨师 [关键词]         查看本人已拥有的厨师
   /我的进度                  查看本人存档概览（菜谱/厨师/修炼数量）
   /最优 [数量]               按 3厨/2厨/1厨 分组输出金币收益最高的排班方案
-  /bcjh源 <foodgame|baochaojianghu>   切换图鉴数据源
   /帮助                      显示功能指令
 
 数据策略：插件加载 10s 后首次拉取图鉴数据，之后按 refresh_hours 定时刷新，内存缓存。
@@ -40,10 +37,7 @@ from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, StarTools
 
-DATA_URLS = {
-    "foodgame": "https://foodgame.github.io/data/data.min.json",
-    "baochaojianghu": "https://h5.baochaojianghu.com/data/data.min.json",
-}
+DATA_URL = "https://h5.baochaojianghu.com/data/data.min.json"
 # 官方存档接口（与 h5.baochaojianghu.com 图鉴使用同一接口）
 ARCHIVE_URL = "https://yx518.com/api/archive.do"
 
@@ -82,10 +76,6 @@ class BaochaoJianghuPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         data_cfg = config.get("DATA_SOURCE", {}) if config else {}
-        source = data_cfg.get("SOURCE", "baochaojianghu")
-        if source not in DATA_URLS:
-            source = "baochaojianghu"
-        self.source = source
         try:
             self.refresh_hours = float(data_cfg.get("REFRESH_HOURS", 6))
         except (TypeError, ValueError):
@@ -101,10 +91,9 @@ class BaochaoJianghuPlugin(Star):
         asyncio.create_task(self._background_refresh())
 
     # ---------- 数据层 ----------
-    async def _fetch(self, source: str) -> dict:
-        url = DATA_URLS[source]
+    async def _fetch(self) -> dict:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.get(url) as resp:
+            async with session.get(DATA_URL) as resp:
                 resp.raise_for_status()
                 return await resp.json()
 
@@ -112,11 +101,11 @@ class BaochaoJianghuPlugin(Star):
         now = datetime.now(timezone.utc).timestamp()
         async with self._lock:
             if not self._data or (now - self._data_ts) > self.refresh_hours * 3600:
-                self._data = await self._fetch(self.source)
+                self._data = await self._fetch()
                 self._data_ts = now
                 self._build_indexes()
                 logger.info(
-                    f"[bcjh] 图鉴数据已加载: {self.source}, "
+                    f"[bcjh] 图鉴数据已加载: "
                     f"菜谱 {len(self._data.get('recipes', []))}, "
                     f"厨师 {len(self._data.get('chefs', []))}, "
                     f"任务 {len(self._data.get('quests', []))}"
@@ -845,24 +834,11 @@ class BaochaoJianghuPlugin(Star):
             "/我的厨师 [词] [p页码] 查看已拥有厨师（每页9个）",
             "/我的进度       查看本人存档概览",
             "/最优 [n]       按 3厨/2厨/1厨 分组输出收益最高排班方案",
-            "/bcjh源 <源>    切换图鉴数据源（foodgame/baochaojianghu）",
             "/帮助           显示本帮助",
             "",
             "翻页示例: /我的菜谱 p2 或 /我的菜谱 面 p2",
         ]
         yield event.plain_result("\n".join(lines))
-
-    @filter.command("bcjh源", "切换图鉴数据源（foodgame 或 baochaojianghu）")
-    async def cmd_source(self, event: AstrMessageEvent, source: str = ""):
-        if source not in DATA_URLS:
-            yield event.plain_result(
-                f"可用数据源: {', '.join(DATA_URLS.keys())}（当前: {self.source}）"
-            )
-            return
-        self.source = source
-        self._data = {}
-        await self._ensure_data()
-        yield event.plain_result(f"已切换数据源为 {source}")
 
     async def terminate(self):
         """插件卸载时清理（可选）"""

@@ -1,5 +1,5 @@
 name: baochaojianghu
-desc: 爆炒江湖图鉴查询插件，聊天内直接查询菜谱、厨师、厨具、任务、材料、遗玉数据，支持导入官方存档查询本人拥有进度。数据来自公开图鉴 JSON（h5.baochaojianghu.com / foodgame.github.io）与官方存档接口。
+desc: 爆炒江湖图鉴查询插件，聊天内直接查询菜谱、厨师、厨具、任务、材料、遗玉数据，支持导入官方存档查询本人拥有进度。数据来自白菜菊花图鉴公开 JSON（h5.baochaojianghu.com）与官方存档接口。
 author: wandaren
 version: 0.2.0
 repo: https://github.com/wandaren/astrbot-plugin-baochaojianghu

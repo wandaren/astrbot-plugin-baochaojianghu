@@ -3,17 +3,11 @@
     "description": "数据源配置",
     "type": "object",
     "items": {
-      "SOURCE": {
-        "description": "默认数据源",
-        "type": "string",
-        "default": "baochaojianghu",
-        "hint": "可选 baochaojianghu（白菜菊花图鉴，更新更全）或 foodgame（图鉴站，较旧）"
-      },
       "REFRESH_HOURS": {
         "description": "缓存刷新间隔（小时）",
         "type": "float",
         "default": 6,
-        "hint": "数据缓存定时刷新的间隔，单位小时，默认 6"
+        "hint": "图鉴数据缓存定时刷新的间隔，单位小时，默认 6"
       }
     }
   }

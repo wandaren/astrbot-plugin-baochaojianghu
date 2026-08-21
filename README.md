@@ -19,7 +19,6 @@
 | `/我的厨师 [关键词] [p页码]` | 查看本人已拥有的厨师（每页 9 个） |
 | `/我的进度` | 查看本人存档概览（菜谱/厨师/修炼数量） |
 | `/最优 [每组方案数]` | 按 3厨/2厨/1厨 分组输出金币收益最高的排班方案（每厨师≤3菜，默认每组 1 个，最多 3 个） |
-| `/bcjh源 <foodgame\|baochaojianghu>` | 切换图鉴数据源（默认 `baochaojianghu`） |
 | `/帮助` | 显示全部功能指令 |
 
 **翻页**：所有查询类指令支持 `p页码` 后缀（如 `/我的菜谱 p2`、`/我的菜谱 面 p2`），输出底部会显示当前页/总页数并提示下一页命令。
@@ -121,16 +120,14 @@ astrbot plugin install --editable ./astrbot-plugin-baochaojianghu
 
 | 数据源 | 地址 | 说明 |
 | --- | --- | --- |
-| 白菜菊花图鉴（默认） | `https://h5.baochaojianghu.com/data/data.min.json` | 更新更全，~2MB |
-| 图鉴站 | `https://foodgame.github.io/data/data.min.json` | 较旧，~1.7MB |
+| 白菜菊花图鉴 | `https://h5.baochaojianghu.com/data/data.min.json` | 活跃维护，~2MB |
 
-两个数据源 JSON 结构完全一致，数据版权归原作者及《爆炒江湖》官方所有，本插件仅作查询展示。
+数据版权归原作者及《爆炒江湖》官方所有，本插件仅作查询展示。
 
 ## 插件配置
 
 安装后在 AstrBot WebUI 的插件设置中可调整（对应 `_conf_schema.json`）：
 
-- `SOURCE`: 默认数据源，可选 `baochaojianghu`（默认）/ `foodgame`
 - `REFRESH_HOURS`: 数据缓存刷新间隔（小时），默认 `6`
 
 ## 开发
