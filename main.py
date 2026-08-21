@@ -258,13 +258,46 @@ class BaochaoJianghuPlugin(Star):
 
     # ---------- 检索 ----------
     @staticmethod
-    def _search(items: list, keyword: str, limit: int = 5):
+    def _search(items: list, keyword: str, limit: int = 0):
         kw = keyword.strip().lower()
         if not items:
             return []
         exact = [it for it in items if str(it.get("name", "")).strip() == keyword.strip()]
         hits = exact or [it for it in items if kw in str(it.get("name", "")).lower()]
-        return hits[:limit]
+        return hits[:limit] if limit > 0 else hits
+
+    @staticmethod
+    def _parse_keyword_page(kw: str) -> tuple:
+        """
+        解析 '关键词 pN' / '关键词' -> (关键词, 页码)。
+        页码格式：p2 / P2（大小写均可），默认 1。
+        """
+        page = 1
+        words = []
+        for part in kw.split():
+            if len(part) > 1 and part[0] in "pP" and part[1:].isdigit():
+                page = int(part[1:])
+            else:
+                words.append(part)
+        return " ".join(words).strip(), page
+
+    def _paged(self, body_lines: list, total: int, page: int, page_size: int,
+               cmd: str, kw_hint: str = "") -> str:
+        """
+        通用分页渲染：输出当前页内容 + 页码信息 + 翻页提示。
+        kw_hint 为翻页时需要保留的关键词（如 '面'），无关键词则为 ''。
+        """
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * page_size
+        body = body_lines[start:start + page_size]
+        text = "\n".join(body)
+        if total_pages > 1:
+            text += f"\n\n第 {page}/{total_pages} 页 · 共 {total} 条"
+            if page < total_pages:
+                nxt = (kw_hint + " " if kw_hint else "") + f"p{page + 1}"
+                text += f'\n使用 "/{cmd} {nxt}" 查看下一页'
+        return text[:MAX_MSG_LEN]
 
     # ---------- 格式化 ----------
     @staticmethod
@@ -409,19 +442,18 @@ class BaochaoJianghuPlugin(Star):
             f"技能: {'; '.join(skills) if skills else '-'}"
         )
 
-    def _query(self, key: str, keyword: str, formatter) -> str:
+    def _query(self, key: str, keyword: str, formatter, page: int = 1, page_size: int = 5,
+               cmd: str = "") -> str:
         items = self._data.get(key, [])
         hits = self._search(items, keyword)
         if not hits:
             return f"未找到匹配的{key}，试试更完整的关键词。"
         lines = [formatter(it) for it in hits]
-        text = "\n\n".join(lines)
-        if len(hits) > 1:
-            text += f"\n\n共匹配 {len(hits)} 条"
-        return text[:MAX_MSG_LEN]
+        return self._paged(lines, len(hits), page, page_size, cmd or key, keyword.strip())
 
-    def _list_got(self, key: str, got_map: dict, id_key: str, keyword: str = "", limit: int = 30) -> str:
-        """列出已拥有的条目（got_map: str(id)->bool）"""
+    def _list_got(self, key: str, got_map: dict, id_key: str, keyword: str = "",
+                  page: int = 1, page_size: int = 9, cmd: str = "") -> str:
+        """列出已拥有的条目（got_map: str(id)->bool），每页 page_size 个"""
         items = self._data.get(key, [])
         owned = [it for it in items if got_map.get(str(it.get(id_key)))]
         if keyword:
@@ -429,11 +461,8 @@ class BaochaoJianghuPlugin(Star):
             owned = [it for it in owned if kw in str(it.get("name", "")).lower()]
         if not owned:
             return f"没有已拥有的{key}（或关键词无匹配）。"
-        lines = [f"· {it.get('name')}" for it in owned[:limit]]
-        text = "\n".join(lines)
-        if len(owned) > limit:
-            text += f"\n…共 {len(owned)} 条，仅显示前 {limit} 条"
-        return text[:MAX_MSG_LEN]
+        lines = [f"· {it.get('name')}" for it in owned]
+        return self._paged(lines, len(owned), page, page_size, cmd or key, keyword.strip())
 
     # ---------- 收益计算 ----------
     @staticmethod
@@ -612,56 +641,56 @@ class BaochaoJianghuPlugin(Star):
     @filter.command("菜谱", "查询菜谱（品阶/技法/材料/售价/解锁）")
     async def cmd_recipe(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
-        kw = keyword.strip()
+        kw, page = self._parse_keyword_page(keyword)
         if not kw:
-            yield event.plain_result("用法: /菜谱 <名称或关键词>")
+            yield event.plain_result("用法: /菜谱 <名称或关键词> [p页码]")
             return
-        yield event.plain_result(self._query("recipes", kw, self._fmt_recipe))
+        yield event.plain_result(self._query("recipes", kw, self._fmt_recipe, page, cmd="菜谱"))
 
     @filter.command("厨师", "查询厨师（星级/技法/技能/修炼任务）")
     async def cmd_chef(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
-        kw = keyword.strip()
+        kw, page = self._parse_keyword_page(keyword)
         if not kw:
-            yield event.plain_result("用法: /厨师 <名称或关键词>")
+            yield event.plain_result("用法: /厨师 <名称或关键词> [p页码]")
             return
-        yield event.plain_result(self._query("chefs", kw, self._fmt_chef))
+        yield event.plain_result(self._query("chefs", kw, self._fmt_chef, page, cmd="厨师"))
 
     @filter.command("厨具", "查询厨具（等级/加成）")
     async def cmd_equip(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
-        kw = keyword.strip()
+        kw, page = self._parse_keyword_page(keyword)
         if not kw:
-            yield event.plain_result("用法: /厨具 <名称或关键词>")
+            yield event.plain_result("用法: /厨具 <名称或关键词> [p页码]")
             return
-        yield event.plain_result(self._query("equips", kw, self._fmt_equip))
+        yield event.plain_result(self._query("equips", kw, self._fmt_equip, page, cmd="厨具"))
 
     @filter.command("任务", "查询任务")
     async def cmd_quest(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
-        kw = keyword.strip()
+        kw, page = self._parse_keyword_page(keyword)
         if not kw:
-            yield event.plain_result("用法: /任务 <关键词或编号>")
+            yield event.plain_result("用法: /任务 <关键词或编号> [p页码]")
             return
-        yield event.plain_result(self._query("quests", kw, self._fmt_quest))
+        yield event.plain_result(self._query("quests", kw, self._fmt_quest, page, cmd="任务"))
 
     @filter.command("材料", "查询材料获取方式")
     async def cmd_material(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
-        kw = keyword.strip()
+        kw, page = self._parse_keyword_page(keyword)
         if not kw:
-            yield event.plain_result("用法: /材料 <名称或关键词>")
+            yield event.plain_result("用法: /材料 <名称或关键词> [p页码]")
             return
-        yield event.plain_result(self._query("materials", kw, self._fmt_material))
+        yield event.plain_result(self._query("materials", kw, self._fmt_material, page, cmd="材料"))
 
     @filter.command("遗玉", "查询遗玉加成")
     async def cmd_amber(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
-        kw = keyword.strip()
+        kw, page = self._parse_keyword_page(keyword)
         if not kw:
-            yield event.plain_result("用法: /遗玉 <名称或关键词>")
+            yield event.plain_result("用法: /遗玉 <名称或关键词> [p页码]")
             return
-        yield event.plain_result(self._query("ambers", kw, self._fmt_amber))
+        yield event.plain_result(self._query("ambers", kw, self._fmt_amber, page, cmd="遗玉"))
 
     @filter.command("导入", "导入官方存档（游戏设置页获取校验码）")
     async def cmd_import(self, event: AstrMessageEvent, code: str = ""):
@@ -690,7 +719,7 @@ class BaochaoJianghuPlugin(Star):
             f"可用 /我的菜谱 /我的厨师 /我的进度 查询。"
         )
 
-    @filter.command("我的菜谱", "查看本人已拥有的菜谱")
+    @filter.command("我的菜谱", "查看本人已拥有的菜谱（/我的菜谱 p2 翻页）")
     async def cmd_my_recipes(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
         user_id = str(event.get_sender_id())
@@ -698,9 +727,10 @@ class BaochaoJianghuPlugin(Star):
         if not archive:
             yield event.plain_result("尚未导入官方存档，先使用 /导入 <校验码>。")
             return
-        yield event.plain_result(self._list_got("recipes", archive.get("repGot", {}), "recipeId", keyword))
+        kw, page = self._parse_keyword_page(keyword)
+        yield event.plain_result(self._list_got("recipes", archive.get("repGot", {}), "recipeId", kw, page, cmd="我的菜谱"))
 
-    @filter.command("我的厨师", "查看本人已拥有的厨师")
+    @filter.command("我的厨师", "查看本人已拥有的厨师（/我的厨师 p2 翻页）")
     async def cmd_my_chefs(self, event: AstrMessageEvent, keyword: str = ""):
         await self._ensure_data()
         user_id = str(event.get_sender_id())
@@ -708,7 +738,8 @@ class BaochaoJianghuPlugin(Star):
         if not archive:
             yield event.plain_result("尚未导入官方存档，先使用 /导入 <校验码>。")
             return
-        yield event.plain_result(self._list_got("chefs", archive.get("chefGot", {}), "chefId", keyword))
+        kw, page = self._parse_keyword_page(keyword)
+        yield event.plain_result(self._list_got("chefs", archive.get("chefGot", {}), "chefId", kw, page, cmd="我的厨师"))
 
     @filter.command("我的进度", "查看本人存档概览")
     async def cmd_my_progress(self, event: AstrMessageEvent):
@@ -751,19 +782,21 @@ class BaochaoJianghuPlugin(Star):
     async def cmd_help(self, event: AstrMessageEvent):
         lines = [
             "[爆炒江湖图鉴插件] 功能指令：",
-            "/菜谱 <名称>    查询菜谱（品阶/技法/材料/售价/解锁）",
-            "/厨师 <名称>    查询厨师（星级/技法/技能/修炼任务）",
-            "/厨具 <名称>    查询厨具（等级/加成）",
-            "/任务 <关键词>  查询任务",
-            "/材料 <名称>    查询材料获取方式",
-            "/遗玉 <名称>    查询遗玉加成",
+            "/菜谱 <名称> [p页码]   查询菜谱（图鉴卡格式）",
+            "/厨师 <名称> [p页码]   查询厨师（星级/技法/技能/修炼任务）",
+            "/厨具 <名称> [p页码]   查询厨具（品阶/技能）",
+            "/任务 <关键词> [p页码] 查询任务",
+            "/材料 <名称> [p页码]   查询材料获取方式",
+            "/遗玉 <名称> [p页码]   查询遗玉（0~4级效果）",
             "/导入 <校验码>  导入官方存档（游戏设置页获取校验码）",
-            "/我的菜谱 [词]  查看本人已拥有的菜谱",
-            "/我的厨师 [词]  查看本人已拥有的厨师",
+            "/我的菜谱 [词] [p页码] 查看已拥有菜谱（每页9个）",
+            "/我的厨师 [词] [p页码] 查看已拥有厨师（每页9个）",
             "/我的进度       查看本人存档概览",
             "/最优 [n]       按 3厨/2厨/1厨 分组输出收益最高排班方案",
             "/bcjh源 <源>    切换图鉴数据源（foodgame/baochaojianghu）",
             "/帮助           显示本帮助",
+            "",
+            "翻页示例: /我的菜谱 p2 或 /我的菜谱 面 p2",
         ]
         yield event.plain_result("\n".join(lines))
 
